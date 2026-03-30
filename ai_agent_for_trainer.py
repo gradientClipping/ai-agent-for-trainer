@@ -522,15 +522,13 @@ def run_evaluation(client, sot_df, responses_df, progress_bar, loading_panel_pla
     total_steps   = len(q_cols) * len(responses_df)
     step, results = 0, {}
 
-    # Compute how many AI calls there will be (non-PG, non-short-essay questions)
+    # Compute how many AI calls there will be (non-PG questions)
     ai_call_count = 0
     for num in range(len(q_cols)):
         if num >= len(sot_df):
             break
         qtype = str(sot_df.iloc[num].get('Question Type', '')).strip()
-        is_pg    = qtype.upper() == 'PG'
-        is_essay = 'benar' in qtype.lower() and 'salah' in qtype.lower()
-        if not is_pg and not is_essay:
+        if qtype.upper() != 'PG':
             ai_call_count += len(responses_df)
     ai_calls_done = 0
 
@@ -558,7 +556,7 @@ def run_evaluation(client, sot_df, responses_df, progress_bar, loading_panel_pla
         overall_pct = int(100 * step / total_steps) if total_steps else 0
         q_label     = f"Question {num + 1} of {len(q_cols)}"
         type_label  = qtype if qtype else "Unknown"
-        method      = "Rule-based (instant)" if (is_pg or is_essay) else f"GPT-4o · {len(responses_df)} agent(s)"
+        method      = "Rule-based (instant)" if is_pg else f"GPT-4o · {len(responses_df)} agent(s)"
         shimmer_w   = max(4, overall_pct)
 
         loading_panel_placeholder.markdown(
@@ -582,27 +580,30 @@ def run_evaluation(client, sot_df, responses_df, progress_bar, loading_panel_pla
             unsafe_allow_html=True,
         )
 
-        if is_essay or is_pg:
-            # Synchronous processing for fast rule-based checks
+        if is_pg:
+            # Synchronous processing exclusively for Multiple Choice (PG)
             for i in range(len(responses_df)):
                 r = responses_df[col].iloc[i]
-                if is_essay and is_short_answer(str(r)):
+                if pg_match(str(a), str(r)):
+                    scores.append(int(w))
+                    validations.append("OK")
+                else:
                     scores.append(0)
-                    validations.append("Jawaban terlalu singkat (kurang dari 3 kata), tidak dapat dievaluasi.")
-                elif is_pg:
-                    if pg_match(str(a), str(r)):
-                        scores.append(int(w)); validations.append("OK")
-                    else:
-                        scores.append(0); validations.append("Jawaban tidak sesuai dengan pilihan yang benar.")
+                    validations.append("Jawaban tidak sesuai dengan pilihan yang benar.")
                 
                 step += 1
                 progress_bar.progress(min(step / total_steps, 1.0))
         else:
-            # Parallel AI Evaluation
+            # Parallel AI Evaluation for Essays and other types
             def eval_single(r_text):
                 if pd.isna(r_text) or str(r_text).strip() == "":
                     return 0, "Tidak ada jawaban."
-                    
+                
+                # Fast fail for short answers so we don't waste an AI call
+                if is_essay and is_short_answer(str(r_text)):
+                    return 0, "Jawaban terlalu singkat (kurang dari 3 kata), tidak dapat dievaluasi."
+
+                # If it's a valid long answer, send it to the AI
                 for retry in range(3):
                     try:
                         content = evaluate_answer_ai(client, q, a, w, r_text, g)
@@ -615,7 +616,6 @@ def run_evaluation(client, sot_df, responses_df, progress_bar, loading_panel_pla
                 return 0, "Rate limit error."
 
             # Use ThreadPoolExecutor to run 10 requests at the same time
-            # map ensures the results stay in the same order as the input
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 for sv, vv in executor.map(eval_single, responses_df[col]):
                     scores.append(sv)
