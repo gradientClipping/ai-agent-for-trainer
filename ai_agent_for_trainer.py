@@ -4,6 +4,7 @@ import re
 import time
 import io
 import base64
+import concurrent.futures
 from pathlib import Path
 from openai import OpenAI
 
@@ -581,34 +582,48 @@ def run_evaluation(client, sot_df, responses_df, progress_bar, loading_panel_pla
             unsafe_allow_html=True,
         )
 
-        for i in range(len(responses_df)):
-            r = responses_df[col].iloc[i]
-            if is_essay and is_short_answer(str(r)):
-                scores.append(0)
-                validations.append("Jawaban terlalu singkat (kurang dari 3 kata), tidak dapat dievaluasi.")
-            elif is_pg:
-                if pg_match(str(a), str(r)):
-                    scores.append(int(w)); validations.append("OK")
-                else:
-                    scores.append(0); validations.append("Jawaban tidak sesuai dengan pilihan yang benar.")
-            else:
+        if is_essay or is_pg:
+            # Synchronous processing for fast rule-based checks
+            for i in range(len(responses_df)):
+                r = responses_df[col].iloc[i]
+                if is_essay and is_short_answer(str(r)):
+                    scores.append(0)
+                    validations.append("Jawaban terlalu singkat (kurang dari 3 kata), tidak dapat dievaluasi.")
+                elif is_pg:
+                    if pg_match(str(a), str(r)):
+                        scores.append(int(w)); validations.append("OK")
+                    else:
+                        scores.append(0); validations.append("Jawaban tidak sesuai dengan pilihan yang benar.")
+                
+                step += 1
+                progress_bar.progress(min(step / total_steps, 1.0))
+        else:
+            # Parallel AI Evaluation
+            def eval_single(r_text):
+                if pd.isna(r_text) or str(r_text).strip() == "":
+                    return 0, "Tidak ada jawaban."
+                    
                 for retry in range(3):
                     try:
-                        content = evaluate_answer_ai(client, q, a, w, r, g); break
+                        content = evaluate_answer_ai(client, q, a, w, r_text, g)
+                        return parse_ai_response(content, int(w))
                     except Exception as e:
                         if "429" in str(e) or "rate limit" in str(e).lower():
-                            time.sleep(3 + retry)
+                            time.sleep(2 + retry) # exponential backoff
                         else:
-                            raise
-                else:
-                    content = "Score: 0\nValidation: Rate limit error."
-                sv, vv = parse_ai_response(content, int(w))
-                scores.append(sv); validations.append(vv)
-                ai_calls_done += 1
-                time.sleep(3.5)
+                            return 0, f"Error: {e}"
+                return 0, "Rate limit error."
 
-            step += 1
-            progress_bar.progress(min(step / total_steps, 1.0))
+            # Use ThreadPoolExecutor to run 10 requests at the same time
+            # map ensures the results stay in the same order as the input
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                for sv, vv in executor.map(eval_single, responses_df[col]):
+                    scores.append(sv)
+                    validations.append(vv)
+                    ai_calls_done += 1
+                    
+                    step += 1
+                    progress_bar.progress(min(step / total_steps, 1.0))
 
         results[num + 1] = pd.DataFrame({
             'timestamp':        responses_df['timestamp'],
@@ -712,7 +727,7 @@ def main():
             unsafe_allow_html=True,
         )
         
-        # ADDED DYNAMIC API KEY INPUT HERE
+        # DYNAMIC API KEY INPUT
         st.markdown("### Configuration")
         api_key_input = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
         
@@ -851,7 +866,6 @@ def main():
 
     if st.button("Start Evaluation", type="primary", use_container_width=True):
         
-        # ADDED SAFEGUARD HERE
         if not api_key_input:
             alert("error", "⚠️ Please enter your OpenAI API key in the sidebar configuration before starting the evaluation.")
             return
