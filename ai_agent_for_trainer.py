@@ -603,20 +603,22 @@ def run_evaluation(client, sot_df, responses_df, progress_bar, loading_panel_pla
                 if is_essay and is_short_answer(str(r_text)):
                     return 0, "Jawaban terlalu singkat (kurang dari 3 kata), tidak dapat dievaluasi."
 
-                # If it's a valid long answer, send it to the AI
-                for retry in range(3):
+                for retry in range(5): # Naikkan batas toleransi retry jadi 5 kali
                     try:
                         content = evaluate_answer_ai(client, q, a, w, r_text, g)
                         return parse_ai_response(content, int(w))
                     except Exception as e:
                         if "429" in str(e) or "rate limit" in str(e).lower():
-                            time.sleep(2 + retry) # exponential backoff
+                            # REAL Exponential backoff (10s, 20s, 40s...) + Jitter (random 1-3 detik)
+                            # Jitter berguna agar 10 thread tidak bangun & nembak API barengan lagi
+                            import random
+                            wait_time = (10 * (2 ** retry)) + random.uniform(1, 3) 
+                            time.sleep(wait_time)
                         else:
                             return 0, f"Error: {e}"
                 return 0, "Rate limit error."
 
-            # Use ThreadPoolExecutor to run 10 requests at the same time
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 for sv, vv in executor.map(eval_single, responses_df[col]):
                     scores.append(sv)
                     validations.append(vv)
