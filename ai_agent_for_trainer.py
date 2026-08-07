@@ -369,6 +369,12 @@ p, li, span, label, div {{
 """
 
 # ─────────────────────────────────────────────
+# LLM PROXY CONFIG
+# ─────────────────────────────────────────────
+LITELLM_API_BASE = "https://litellm.stg.super-id.net"
+MODEL_NAME = "bedrock/us/claude-sonnet-4-6"
+
+# ─────────────────────────────────────────────
 # SYSTEM PROMPT
 # ─────────────────────────────────────────────
 SYSTEM_PROMPT = """
@@ -497,7 +503,7 @@ def evaluate_answer_ai(client: OpenAI, q, a, w, r, g=None) -> str:
         f"Agent Answer: {r}"
     )
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": user_prompt},
@@ -556,7 +562,7 @@ def run_evaluation(client, sot_df, responses_df, progress_bar, loading_panel_pla
         overall_pct = int(100 * step / total_steps) if total_steps else 0
         q_label     = f"Question {num + 1} of {len(q_cols)}"
         type_label  = qtype if qtype else "Unknown"
-        method      = "Rule-based (instant)" if is_pg else f"GPT-4o · {len(responses_df)} agent(s)"
+        method      = "Rule-based (instant)" if is_pg else f"{MODEL_NAME} · {len(responses_df)} agent(s)"
         shimmer_w   = max(4, overall_pct)
 
         loading_panel_placeholder.markdown(
@@ -731,7 +737,7 @@ def main():
         
         # DYNAMIC API KEY INPUT
         st.markdown("### Configuration")
-        api_key_input = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
+        api_key_input = st.text_input("LiteLLM API Key", type="password", placeholder="sk-...")
         
         if api_key_input:
             st.markdown(
@@ -762,7 +768,7 @@ def main():
         rules = [
             ("PG", "Matched by option letter or first-5-word comparison (normalized + jumble)"),
             ("Benar-Salah Essay", "Answers of 2 words or fewer receive a score of 0 automatically"),
-            ("All other types", "Evaluated by GPT-4o against the Answer Key and Scoring Guidelines"),
+            ("All other types", f"Evaluated by {MODEL_NAME} against the Answer Key and Scoring Guidelines"),
             ("Integrity check", "Cross-agent identical answers for the same question are flagged"),
         ]
         for rtype, rdesc in rules:
@@ -863,16 +869,16 @@ def main():
 
     # ── Step 4: Run Evaluation ──
     section("4", "Run Evaluation",
-            "Scores all agent responses using the rules above. PG and short-essay questions are scored "
-            "instantly. All other question types are sent to GPT-4o.")
+            f"Scores all agent responses using the rules above. PG and short-essay questions are scored "
+            f"instantly. All other question types are sent to {MODEL_NAME}.")
 
     if st.button("Start Evaluation", type="primary", use_container_width=True):
         
         if not api_key_input:
-            alert("error", "⚠️ Please enter your OpenAI API key in the sidebar configuration before starting the evaluation.")
+            alert("error", "⚠️ Please enter your LiteLLM API key in the sidebar configuration before starting the evaluation.")
             return
 
-        client = OpenAI(api_key=api_key_input)
+        client = OpenAI(api_key=api_key_input, base_url=LITELLM_API_BASE)
         st.markdown("---")
 
         # Native Streamlit progress bar (thin, stays at top)
